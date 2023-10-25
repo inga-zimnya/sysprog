@@ -5,10 +5,8 @@
 #include <time.h>
 #include "libcoro.h"
 
-#define MAX_NUMBERS 10000
-
 struct context {
-    int (*numbers)[MAX_NUMBERS];//результаты сортировки каждого файла
+    int **numbers;//результаты сортировки каждого файла
     int* num_elements;//сколько чисел в каждом файле
     long whenStarted; // в какой момент времени корутина запустилась/продолжила работу
     long time; // сколько проработала
@@ -23,7 +21,6 @@ void swap(int* a, int* b) {
     *a = *b;
     *b = temp;
 }
-
 
 // Function to partition the array for Quick Sort
 int partition(int arr[], int low, int high) {
@@ -127,7 +124,6 @@ void mergeFiles(int numbers[][MAX_NUMBERS], int num_elements[], int numFiles) {
             break;
         }
 		merged[minIndex]++;
-		
 
         fprintf(output, "%d ", minElement);
     }
@@ -145,12 +141,18 @@ coroutine_func_f(void *ctx)
     clock_gettime(CLOCK_MONOTONIC, &startTime);
     context->whenStarted = startTime.tv_sec * 1000000000 + startTime.tv_nsec;
 
-/////////////////
     while (*(context->nextTaskIndex) < context->numFiles) {
         // Работаем с текущей таской
         int i = *context->nextTaskIndex;
         char* filename = context->arguments[*(context->nextTaskIndex)];
         context->num_elements[i] = read_numbers(filename, context->numbers[i]);
+        context->numbers[i] = (int *)malloc(context->num_elements[i] * sizeof(int));
+
+        if (context->numbers[i] == NULL) {
+            perror("Memory allocation failed for numbers[i]");
+            exit(EXIT_FAILURE);
+        }
+
         (*context->nextTaskIndex)++;
         quick_sort(context->numbers[i], 0, context->num_elements[i], context);
     }
@@ -176,7 +178,7 @@ int main(int argc, char **argv)
     coro_sched_init();
 
 	int numbers[numFiles][MAX_NUMBERS];
-	int num_elements[numFiles];
+    int *numbers[numFiles];
     int nextTaskIndex = 0;
 
     struct context contexts[numCoroutines];
@@ -191,9 +193,6 @@ int main(int argc, char **argv)
             contexts[i].nextTaskIndex = &nextTaskIndex;
             contexts[i].numFiles = numFiles;
             contexts[i].arguments = argv + 3;
-
-
-
             coro_new(coroutine_func_f, &contexts[i]);
 	   } 
 	} else {
@@ -217,8 +216,6 @@ int main(int argc, char **argv)
         int switchCount = ctx-> amount_of_switches;
         printf("Finished, Время работы корутины %d: %ld ns\n", i, coroutineTime);
         printf("Finished, Количество переключений корутины %d: \n", switchCount);
-
-        //coro_delete(coroutines[i]); // Освобождаем память, выделенную для корутины
     }
 
     mergeFiles(numbers, num_elements, numFiles);

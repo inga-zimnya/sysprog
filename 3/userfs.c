@@ -52,8 +52,6 @@ static struct file *file_list = NULL;
 struct filedesc {
 	struct file *file;//открытый файл
 //позиция в открытом файле,лучше хранить ссылку на блок и позиция внутри блока
-
-	/* PUT HERE OTHER MEMBERS */
 };
 
 /**
