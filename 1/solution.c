@@ -5,6 +5,8 @@
 #include <time.h>
 #include "libcoro.h"
 
+#define MAX_NUMBERS 10000
+
 struct context {
     int **numbers;//результаты сортировки каждого файла
     int* num_elements;//сколько чисел в каждом файле
@@ -21,6 +23,7 @@ void swap(int* a, int* b) {
     *a = *b;
     *b = temp;
 }
+
 
 // Function to partition the array for Quick Sort
 int partition(int arr[], int low, int high) {
@@ -68,7 +71,7 @@ void quick_sort(int arr[], int low, int high, struct context* context) {
 }
 
 // Function to read numbers from file and store them in an array
-int read_numbers(const char* filename, int arr[]) {
+int read_numbers(const char* filename, int** numbers) {
     FILE* file = fopen(filename, "r");
     if (file == NULL) {
         perror("Error opening file");
@@ -77,8 +80,9 @@ int read_numbers(const char* filename, int arr[]) {
 
     int number;
     int index = 0;
-    while (fscanf(file, "%d", &number) != EOF && index < MAX_NUMBERS) {
-        arr[index++] = number;
+    while (fscanf(file, "%d", &number) != EOF) {
+        *numbers = realloc(*numbers,  sizeof(int) * (index+1));
+        (*numbers)[index++] = number;
     }
 
     fclose(file);
@@ -100,13 +104,14 @@ void write_numbers(const char* filename, int arr[], int n) {
     fclose(file);
 }
 
-void mergeFiles(int numbers[][MAX_NUMBERS], int num_elements[], int numFiles) {
-	int merged[numFiles];
+void mergeFiles(int **numbers, int *num_elements, int numFiles) {
+	int *merged = (int *)malloc(numFiles * sizeof(int));
 	memset(merged, 0, numFiles * sizeof(int));
 
     FILE *output = fopen("merged_sorted_output.txt", "w");
     if (!output) {
         perror("Ошибка при открытии файла");
+        free(merged);
         exit(1);
     }
 
@@ -129,6 +134,7 @@ void mergeFiles(int numbers[][MAX_NUMBERS], int num_elements[], int numFiles) {
     }
 
     fclose(output);
+    free(merged);
 }
 
 static int
@@ -141,20 +147,15 @@ coroutine_func_f(void *ctx)
     clock_gettime(CLOCK_MONOTONIC, &startTime);
     context->whenStarted = startTime.tv_sec * 1000000000 + startTime.tv_nsec;
 
+/////////////////
     while (*(context->nextTaskIndex) < context->numFiles) {
         // Работаем с текущей таской
         int i = *context->nextTaskIndex;
         char* filename = context->arguments[*(context->nextTaskIndex)];
-        context->num_elements[i] = read_numbers(filename, context->numbers[i]);
-        context->numbers[i] = (int *)malloc(context->num_elements[i] * sizeof(int));
-
-        if (context->numbers[i] == NULL) {
-            perror("Memory allocation failed for numbers[i]");
-            exit(EXIT_FAILURE);
-        }
-
+        context->numbers[i] = NULL;
+        context->num_elements[i] = read_numbers(filename, &context->numbers[i]);
         (*context->nextTaskIndex)++;
-        quick_sort(context->numbers[i], 0, context->num_elements[i], context);
+        quick_sort(context->numbers[i], 0, context->num_elements[i]-1, context);
     }
         // посчитать, сколько корутина проработала
         struct timespec currentTime;
@@ -173,12 +174,18 @@ int main(int argc, char **argv)
     long numCoroutines = strtol(argv[2], NULL, 10);
 
     int numFiles = argc - 3;
-    long period = targetLatency / numFiles;
+    long period = targetLatency *1000 / numFiles;
 
     coro_sched_init();
 
-	int numbers[numFiles][MAX_NUMBERS];
-    int *numbers[numFiles];
+	int **numbers;//!!!!!!!!!!
+    numbers = (int **)malloc(numFiles * sizeof(int *));
+    if (numbers == NULL) {
+        perror("Memory allocation failed for numbers");
+        exit(EXIT_FAILURE);
+    }//!!!!!1
+
+	int num_elements[numFiles];
     int nextTaskIndex = 0;
 
     struct context contexts[numCoroutines];
@@ -193,11 +200,12 @@ int main(int argc, char **argv)
             contexts[i].nextTaskIndex = &nextTaskIndex;
             contexts[i].numFiles = numFiles;
             contexts[i].arguments = argv + 3;
+
             coro_new(coroutine_func_f, &contexts[i]);
 	   } 
 	} else {
         printf("Аргументы не введены.\n");
-    	}
+    }
 
     struct coro *c;
 	while ((c = coro_sched_wait()) != NULL) {
@@ -224,11 +232,12 @@ int main(int argc, char **argv)
     clock_gettime(CLOCK_MONOTONIC, &endTime);
 
     long totalTimeNs = (endTime.tv_sec - startTime.tv_sec) * 1000000000 + (endTime.tv_nsec - startTime.tv_nsec);
-    double totalTimeSec = totalTimeNs / 1e9;
+    double totalTimeSec = totalTimeNs;
 
-    printf("Суммарное время работы программы: %.3lf секунд\n", totalTimeSec);
-
-
-
+    printf("Суммарное время работы программы: %.3lf наносекунд\n", totalTimeSec);
+    for(int i = 0; i < numFiles; i++){
+        free(numbers[i]);
+    }
+    free(numbers);
 	return 0;
 }

@@ -8,13 +8,15 @@
 #define MAX_NUMBERS 10000
 
 struct context {
-    char* filename;
-    int (*numbers)[MAX_NUMBERS];
-    int* num_elements;
+    int (*numbers)[MAX_NUMBERS];//результаты сортировки каждого файла
+    int* num_elements;//сколько чисел в каждом файле
     long whenStarted; // в какой момент времени корутина запустилась/продолжила работу
     long time; // сколько проработала
     int amount_of_switches;
-};
+    int numFiles;
+    long period;
+    char **arguments;
+    int* nextTaskIndex;};
 
 void swap(int* a, int* b) {
     int temp = *a;
@@ -54,16 +56,18 @@ void quick_sort(int arr[], int low, int high, struct context* context) {
     long currentTimeAll = currentTime.tv_sec * 1000000000 + currentTime.tv_nsec;
     long elapsedTimeNSec = currentTimeAll - context->whenStarted;
 
-    coro_yield();
-    context->amount_of_switches++;
-    
-    clock_gettime(CLOCK_MONOTONIC, &currentTime);
-    currentTimeAll = currentTime.tv_sec * 1000000000 + currentTime.tv_nsec;
+    if (elapsedTimeNSec >= context->period){
+        context->time += elapsedTimeNSec;
 
-    context->time += elapsedTimeNSec;
-    // записать, в какое время корутина продолжила работу
-    context->whenStarted = currentTimeAll;
+        coro_yield();
+        context->amount_of_switches++;
     
+        clock_gettime(CLOCK_MONOTONIC, &currentTime);
+        currentTimeAll = currentTime.tv_sec * 1000000000 + currentTime.tv_nsec;
+
+        // записать, в какое время корутина продолжила работу
+        context->whenStarted = currentTimeAll;
+    }
 }
 
 // Function to read numbers from file and store them in an array
@@ -135,17 +139,27 @@ static int
 coroutine_func_f(void *ctx)
 {
     struct context* context = (struct context*)ctx;
-    clock_gettime(CLOCK_MONOTONIC, (struct timespec *)&context->whenStarted);// записать, когда корутина начала работу
+    
+    // Записываем текущее время как время начала работы корутины
+    struct timespec startTime;
+    clock_gettime(CLOCK_MONOTONIC, &startTime);
+    context->whenStarted = startTime.tv_sec * 1000000000 + startTime.tv_nsec;
 
-    *context->num_elements = read_numbers(context->filename, *context->numbers);
-        
-    quick_sort(*context->numbers, 0, *context->num_elements, context);
-
-    // посчитать, скольк корутина проработала
-    struct timespec currentTime;
-    clock_gettime(CLOCK_MONOTONIC, &currentTime);
-    context->time += currentTime.tv_sec * 1000000000 + currentTime.tv_nsec - context->whenStarted;
-	return 0;
+/////////////////
+    while (*(context->nextTaskIndex) < context->numFiles) {
+        // Работаем с текущей таской
+        int i = *context->nextTaskIndex;
+        char* filename = context->arguments[*(context->nextTaskIndex)];
+        context->num_elements[i] = read_numbers(filename, context->numbers[i]);
+        (*context->nextTaskIndex)++;
+        quick_sort(context->numbers[i], 0, context->num_elements[i], context);
+    }
+        // посчитать, сколько корутина проработала
+        struct timespec currentTime;
+        clock_gettime(CLOCK_MONOTONIC, &currentTime);
+        context->time += currentTime.tv_sec * 1000000000 + currentTime.tv_nsec - context->whenStarted;
+    
+    return 0;
 }
 
 int main(int argc, char **argv)
@@ -153,23 +167,32 @@ int main(int argc, char **argv)
 	struct timespec startTime;
     clock_gettime(CLOCK_MONOTONIC, &startTime);
 
+    long targetLatency = strtol(argv[1], NULL, 10);
+    long numCoroutines = strtol(argv[2], NULL, 10);
+
+    int numFiles = argc - 3;
+    long period = targetLatency / numFiles;
+
     coro_sched_init();
-    int numFiles = argc - 1;
 
 	int numbers[numFiles][MAX_NUMBERS];
 	int num_elements[numFiles];
+    int nextTaskIndex = 0;
 
-    struct context contexts[numFiles];
-   // struct coro *coroutines[numFiles]; // Массив для хранения корутин
-
+    struct context contexts[numCoroutines];
     
-	if (argc > 1) {
-        for (int i = 0; i < numFiles; i++) {
-            contexts[i].filename = argv[i + 1];
-            contexts[i].numbers = &numbers[i];
-            contexts[i].num_elements = &num_elements[i];
+	if (argc > 3) {
+        for (int i = 0; i < numCoroutines; i++) {
+            contexts[i].numbers = numbers;
+            contexts[i].num_elements = num_elements;
             contexts[i].time = 0;
             contexts[i].amount_of_switches = 0;
+            contexts[i].period = period;
+            contexts[i].nextTaskIndex = &nextTaskIndex;
+            contexts[i].numFiles = numFiles;
+            contexts[i].arguments = argv + 3;
+
+
 
             coro_new(coroutine_func_f, &contexts[i]);
 	   } 
@@ -188,7 +211,7 @@ int main(int argc, char **argv)
 	}
 
     // Вывод времени работы каждой корутины
-    for (int i = 0; i < numFiles; i++) {
+    for (int i = 0; i < numCoroutines; i++) {
         struct context *ctx = &contexts[i]; // Получаем указатель на контекст из массива
         long coroutineTime = ctx->time;
         int switchCount = ctx-> amount_of_switches;
