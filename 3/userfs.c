@@ -518,3 +518,117 @@ void ufs_destroy(void) {
 	free(file_descriptors);
     file_list = NULL;
 }
+
+#ifdef NEED_RESIZE
+
+/**
+ * Resize a file opened by the file descriptor @a fd. If current
+ * file size is less than @a new_size, then new empty blocks are
+ * created and positions of opened file descriptors are not
+ * changed. If the current size is bigger than @a new_size, then
+ * the blocks are truncated. Opened file descriptors behind the
+ * new file size should proceed from the new file end.
+ **/
+int
+ufs_resize(int fd, size_t new_size){
+	struct filedesc *file_desc = file_descriptors[fd];
+	if (file_desc == NULL || file_desc->file == NULL){
+		ufs_error_code = UFS_ERR_NO_FILE;
+		return -1;
+	}
+	
+	struct file *file = file_desc->file;
+
+	if (new_size == file->file_size){ return 0;}
+	if (new_size > file->file_size){ //add empty blocks
+		if (new_size > MAX_FILE_SIZE){
+		ufs_error_code = UFS_ERR_NO_MEM;
+		return -1;
+		}
+
+		size_t bytes_to_add = new_size - file->file_size;
+		if (bytes_to_add >= BLOCK_SIZE - file->last_block->occupied){
+			bytes_to_add = bytes_to_add - (BLOCK_SIZE - file->last_block->occupied);
+			file->last_block->occupied = BLOCK_SIZE;
+		}
+		while (bytes_to_add > 0){
+            ////////////////////
+			struct block *new_block = (struct block *) calloc(sizeof(struct block), 1);
+            if (new_block == NULL) {
+                ufs_error_code = UFS_ERR_NO_MEM;
+                break;
+            } 
+
+            new_block->memory = (char *) calloc(sizeof(char), BLOCK_SIZE);
+            file_desc->block_position = 0;
+
+            if (new_block->memory == NULL) {
+                free(new_block);
+                ufs_error_code = UFS_ERR_NO_MEM;
+                break;
+            }
+
+            new_block->occupied = 0;
+            file_desc->block = new_block;
+            file_desc->block->prev = file->last_block;
+            file_desc->block->next = NULL;
+
+            struct block *tail = file->last_block;
+
+            if(tail != NULL){
+                tail->next = file_desc->block;
+                file_desc->block->prev = tail;
+            }
+            
+            file->last_block = file_desc->block;
+            if(file->block_list == NULL){
+                file->block_list = file_desc->block;
+            }
+
+            //////////////////
+			if (bytes_to_add >= BLOCK_SIZE - file->last_block->occupied){
+				bytes_to_add = bytes_to_add - (BLOCK_SIZE - file->last_block->occupied);
+				file->last_block->occupied = BLOCK_SIZE;
+			}
+			else{
+				file->last_block->occupied = bytes_to_add;
+				bytes_to_add = 0;
+			}
+		}
+	}
+	else{ //cut existed blocks
+		struct block *current = file->last_block;
+		size_t bytes_to_cut = file->file_size - new_size;
+		while (bytes_to_cut > 0 && current != NULL){
+			if (bytes_to_cut >= current->occupied){
+				bytes_to_cut = bytes_to_cut - current->occupied;
+				current->occupied = 0;
+				current = current->prev;
+				if (current != NULL) {
+					free(current->next->memory);
+					free(current->next);
+				}
+				current->next = NULL;
+			}
+			else{
+				current->occupied = current->occupied - bytes_to_cut;
+				bytes_to_cut = 0;
+			}
+		}
+		file->file_size = new_size;
+		file->last_block = current;
+	}
+	/*struct filedesc *current_file_desc = *file_descriptors;
+	while (current_file_desc != NULL){
+		if (current_file_desc->file == file){
+			current_file_desc->block = file->last_block;
+			current_file_desc->block_position = file->last_block->occupied;
+		}
+		//current_file_desc = current_file_desc->next;
+	}*/
+	file_desc->block = file->block_list;
+	file_desc->block_position = 0;
+	return 0;
+}
+
+#endif

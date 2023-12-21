@@ -10,6 +10,7 @@
  */
 
 #define NEED_OPEN_FLAGS
+#define NEED_RESIZE
 
 /**
  * Here you should specify which features do you want to implement
@@ -20,7 +21,7 @@
  *
  * To allow resize() functions define this:
  *
- *     #define NEED_RESIZE
+ *     
  *
  * It is important to define these macros here, in the header,
  * because it is used by tests.
