@@ -55,26 +55,11 @@ struct file {
 static struct file *file_list = NULL;
 
 struct filedesc {
-	struct file *file;//открытый файл
-//позиция в открытом файле,лучше хранить ссылку на блок и позиция внутри блока
+	struct file *file;
     struct block *block;        // Pointer to the current block being accessed
     size_t block_position;
-
-	/* PUT HERE OTHER MEMBERS */
+    enum open_flags file_flags;
 };
-
-/**
- * An array of file descriptors. When a file descriptor is
- * created, its pointer drops here. When a file descriptor is
- * closed, its place in this array is set to NULL and can be
- * taken by next ufs_open() call.
-
- были 0, 1, 2
- елси закрыли 1, то следующий открытый дескриптор - 1 
- ищем свободное место с минимальным индексом и возвращаем индекс 
-
- */
-
 
 static struct filedesc **file_descriptors = NULL;
 static int file_descriptor_count = 0;//активные дескрипторы
@@ -165,7 +150,15 @@ ufs_open(const char *filename, int flags)
            	// Файл с таким именем уже существует. Увеличим счетчик открытых дескрипторов.
            	file->refs++;
            	ufs_error_code = UFS_ERR_NO_ERR;
-           	return allocate_file_descriptor(file); // Возвращаем дескриптор существующего файла.
+
+            int fd = allocate_file_descriptor(file);
+            struct filedesc *file_desc = file_descriptors[fd];
+            if (flags == 0){
+		        file_desc->file_flags = UFS_READ_WRITE;
+            }else{
+		        file_desc->file_flags = flags;
+            }
+           	return fd; // Возвращаем дескриптор существующего файла.
        	}
        	file = file->next;
    	}
@@ -210,6 +203,14 @@ ufs_open(const char *filename, int flags)
 			ufs_error_code =  UFS_ERR_NO_MEM;
 			return -1;
 		}
+
+        struct filedesc *file_desc = file_descriptors[fd];
+        if (flags == 0){
+		    file_desc->file_flags = UFS_READ_WRITE;
+        }else{
+		    file_desc->file_flags = flags;
+        }
+
 		ufs_error_code = UFS_ERR_NO_ERR;
 		return fd;
     	
@@ -217,6 +218,8 @@ ufs_open(const char *filename, int flags)
 		ufs_error_code = UFS_ERR_NO_FILE;
 		return -1;
 	}
+
+    
 }
 
 ssize_t ufs_write(int fd, const char *buf, size_t size) {
@@ -227,6 +230,11 @@ ssize_t ufs_write(int fd, const char *buf, size_t size) {
 
     struct filedesc *file_desc = file_descriptors[fd];
     struct file *file = file_desc->file;
+
+    if (file_desc->file_flags == UFS_READ_ONLY){
+		ufs_error_code = UFS_ERR_NO_PERMISSION;
+		return -1;
+	}
 
     const char *current_buffer = buf;
     size_t written_bytes = 0; //size left to be written
@@ -331,6 +339,11 @@ ssize_t ufs_read(int fd, char *buf, size_t size) {
     struct filedesc *file_desc = file_descriptors[fd];
     struct file *file = file_desc->file;
     char *current_buffer = buf;
+
+    if (file_desc->file_flags == UFS_WRITE_ONLY){
+		ufs_error_code = UFS_ERR_NO_PERMISSION;
+		return -1;
+	}
 
     size_t bytes_read = 0;
     size_t bytes_to_read = 0;
