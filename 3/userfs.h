@@ -9,12 +9,14 @@
  * FS is a monolithic flat contiguous folder.
  */
 
+#define NEED_OPEN_FLAGS
+
 /**
  * Here you should specify which features do you want to implement
  * via macros: NEED_OPEN_FLAGS and NEED_RESIZE. If you want to
  * allow advanced flags, do this here:
  *
- *     #define NEED_OPEN_FLAGS
+ *     
  *
  * To allow resize() functions define this:
  *

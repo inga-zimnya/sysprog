@@ -7,6 +7,9 @@
 enum {
 	BLOCK_SIZE = 512,
 	MAX_FILE_SIZE = 1024 * 1024 * 100,
+    RETVAL_SUCCESS = 0,
+    RETVAL_FAILURE = -1,
+    RETVAL_EOF = 0
 };
 
 /** Global error code. Set from any function on any error. */
@@ -14,9 +17,9 @@ static enum ufs_error_code ufs_error_code = UFS_ERR_NO_ERR;
 
 struct block {
 	/** Block memory. */
-	char memory[BLOCK_SIZE];
+	char *memory;
 	/** How many bytes are occupied. */
-	int occupied;
+	size_t occupied;
 	/** Next block in the file. */
 	struct block *next;
 	/** Previous block in the file. */
@@ -40,8 +43,10 @@ struct file {
 	/** Files are stored in a double-linked list. */
 	struct file *next;
 	struct file *prev;
+
 //булева переменная на пометку об скорейшем удалении 
 	bool close_delete; 
+    size_t file_size;
 
 	/* PUT HERE OTHER MEMBERS */
 };
@@ -52,8 +57,8 @@ static struct file *file_list = NULL;
 struct filedesc {
 	struct file *file;//открытый файл
 //позиция в открытом файле,лучше хранить ссылку на блок и позиция внутри блока
-    void *block;        // Pointer to the current block being accessed
-    size_t block_position; 
+    struct block *block;        // Pointer to the current block being accessed
+    size_t block_position;
 
 	/* PUT HERE OTHER MEMBERS */
 };
@@ -128,13 +133,15 @@ int allocate_file_descriptor(struct file *file) {
         return -1;
     }
     file_descriptors[new_index]->file = file;
+    file_descriptors[new_index]->block = NULL;
+    file_descriptors[new_index]->block_position = 0;
     file_descriptor_count++;
 
     return new_index; // Возвращаем индекс выделенного дескриптора.
 }
 
 //если налл - нет дескриптора, если не нал есть
-//если активных дескрипторов больше capacity - error
+//если активных дескрипторов больше capacity - errors
 enum ufs_error_code
 ufs_errno()
 {
@@ -179,6 +186,7 @@ ufs_open(const char *filename, int flags)
 		new_file->last_block = NULL;
 		new_file->refs = 1; // Устанавливаем счетчик открытых дескрипторов в 1
 		new_file->name = strdup(filename); // Копируем имя файла
+        new_file->file_size = 0;
 
 		if (new_file->name == NULL) {
 			// Ошибка выделения памяти для имени файла
@@ -209,16 +217,9 @@ ufs_open(const char *filename, int flags)
 		ufs_error_code = UFS_ERR_NO_FILE;
 		return -1;
 	}
-
-    
-
-    
 }
 
 ssize_t ufs_write(int fd, const char *buf, size_t size) {
-    // подразумеваем, что buff != NULL всегда
-
-    // Поиск файла по дескриптору
     if (fd < 0 || fd >= file_descriptor_capacity || file_descriptors[fd] == NULL) {
         ufs_error_code = UFS_ERR_NO_FILE;
         return -1;
@@ -227,47 +228,99 @@ ssize_t ufs_write(int fd, const char *buf, size_t size) {
     struct filedesc *file_desc = file_descriptors[fd];
     struct file *file = file_desc->file;
 
-    // Запись данных в файл
-    size_t bytes_written = 0;
-    while (bytes_written < size) {
-        struct block *current_block = file->last_block;
-        
-        if (current_block == NULL || current_block->occupied == BLOCK_SIZE) {
-            // Создаем новый блок, если текущего нет или он полный
-            struct block *new_block = (struct block *)malloc(sizeof(struct block));
-            if (new_block == NULL) {
-                ufs_error_code = UFS_ERR_NO_MEM;
-                return -1;
-            }
-            new_block->occupied = 0;
-            new_block->next = NULL;
-            new_block->prev = current_block;
-            if (current_block != NULL) {
-                current_block->next = new_block;
-            }
-            if (file->block_list == NULL) {
-                file->block_list = new_block;
-            }
-            file->last_block = new_block;
-            current_block = new_block;
+    const char *current_buffer = buf;
+    size_t written_bytes = 0; //size left to be written
+    size_t bytes_to_write = 0;
+    int count = 0;
+
+    if (file_desc->file->file_size + size> MAX_FILE_SIZE) {
+        ufs_error_code = UFS_ERR_NO_MEM;
+        return RETVAL_FAILURE;
+    }
+
+    if(file_desc->block == NULL){
+        file_desc->block = file->last_block;
+        //file_desc->block_position = 0;
+    }
+    
+    while (written_bytes < size) {
+        if(file_desc->block_position >= BLOCK_SIZE){
+            file_desc->block = file_desc->block->next;
+            file_desc->block_position = 0;
         }
 
-        // Определяем, сколько байт можно записать в текущий блок
-        size_t available_space = BLOCK_SIZE - current_block->occupied;
-        size_t bytes_to_write = (size - bytes_written < available_space) ? (size - bytes_written) : available_space;
+        if(file_desc->block == NULL){
+            struct block *new_block = (struct block *) calloc(sizeof(struct block), 1);
+            if (new_block == NULL) {
+                ufs_error_code = UFS_ERR_NO_MEM;
+                break;
+            } 
 
-        // Копируем данные из буфера в блок
-        memcpy(current_block->memory + current_block->occupied, buf + bytes_written, bytes_to_write);
-        current_block->occupied += bytes_to_write;
-        bytes_written += bytes_to_write;
+            new_block->memory = (char *) calloc(sizeof(char), BLOCK_SIZE);
+            file_desc->block_position = 0;
+
+            if (new_block->memory == NULL) {
+                free(new_block);
+                ufs_error_code = UFS_ERR_NO_MEM;
+                break;
+            }
+
+            new_block->occupied = 0;
+            file_desc->block = new_block;
+            file_desc->block->prev = file->last_block;
+            file_desc->block->next = NULL;
+
+            struct block *tail = file->last_block;
+
+            if(tail != NULL){
+                tail->next = file_desc->block;
+                file_desc->block->prev = tail;
+            }
+            
+            file->last_block = file_desc->block;
+            if(file->block_list == NULL){
+                file->block_list = file_desc->block;
+            }
+        }
+
+        count++;
+
+        bytes_to_write = size - written_bytes;
+        if(file_desc->block_position > file_desc->block->occupied){
+            file_desc->block_position = file_desc->block->occupied;
+        }
+
+        if(bytes_to_write + file_desc->block_position > BLOCK_SIZE){
+            bytes_to_write = BLOCK_SIZE - file_desc->block_position;
+        }
+
+        char *position_to = file_desc->block->memory + file_desc->block_position;
+        memcpy(position_to, current_buffer, bytes_to_write);
+
+        written_bytes += bytes_to_write;
+        file_desc->block_position += bytes_to_write;
+
+        if(file_desc->block_position > file_desc->block->occupied){
+            file_desc->file->file_size += (file_desc->block_position - file_desc->block->occupied);
+            file_desc->block->occupied = file_desc->block_position;
+        }
+
+        current_buffer += bytes_to_write;
+        
+        if(file_desc->file->file_size == MAX_FILE_SIZE){
+            break;
+        }        
     }
 
     ufs_error_code = UFS_ERR_NO_ERR;
-    return bytes_written;
+    return size;
 }
+
+
 
 //сделать проверку на размер файла при желаемом размере записываемого файла 
 
+//сколько в файле, сделать сравнение, считать наименьшее
 ssize_t ufs_read(int fd, char *buf, size_t size) {
     // Check if the file descriptor is valid
     if (fd < 0 || fd >= file_descriptor_capacity || file_descriptors[fd] == NULL) {
@@ -277,47 +330,54 @@ ssize_t ufs_read(int fd, char *buf, size_t size) {
 
     struct filedesc *file_desc = file_descriptors[fd];
     struct file *file = file_desc->file;
-
-    // Retrieve the current block and position from the file descriptor
-    struct block *current_block = file_desc->block;
-    size_t current_block_position = file_desc->block_position;
-
-    // If the current_block is NULL, it means the file was just opened. 
-    // In this case, set the current_block to the first block.
-    if (current_block == NULL) {
-        current_block = file->block_list;
-    }
+    char *current_buffer = buf;
 
     size_t bytes_read = 0;
+    size_t bytes_to_read = 0;
+
+    if(file_desc->block == NULL){
+        file_desc->block = file->block_list;
+    }
+
+    if(file_desc->block_position == BLOCK_SIZE){
+        file_desc->block = file_desc->block->next;
+        file_desc->block_position = 0;
+    }
 
     // Skip already read bytes
-    while (bytes_read < size && current_block != NULL && current_block_position > 0) {
-        size_t available_data = current_block->occupied - current_block_position;
-        size_t bytes_to_skip = (size - bytes_read < available_data) ? (size - bytes_read) : available_data;
-        current_block_position += bytes_to_skip;
-        bytes_read += bytes_to_skip;
-    }
+    while (bytes_read < size) {
+        if(file_desc->block == NULL) break;
+        bytes_to_read = size - bytes_read;
 
-    while (bytes_read < size && current_block != NULL) {
-        size_t available_data = current_block->occupied - current_block_position;
-        size_t bytes_to_read = (size - bytes_read < available_data) ? (size - bytes_read) : available_data;
+        if (bytes_to_read > file_desc->block->occupied - file_desc->block_position){
+			bytes_to_read = file_desc->block->occupied - file_desc->block_position;
+		}
 
-        // Copy data from the current block to the buffer
-        memcpy(buf + bytes_read, current_block->memory + current_block_position, bytes_to_read);
+        char *position_from = file_desc->block->memory + file_desc->block_position;
+
+        memcpy(current_buffer, position_from, bytes_to_read);
+        
+        current_buffer += bytes_to_read;
         bytes_read += bytes_to_read;
 
-        current_block_position += bytes_to_read;
+        file_desc->block_position += bytes_to_read;
 
-        if (current_block_position == (size_t)current_block->occupied) {
-            // Move to the next block
-            current_block = current_block->next;
-            current_block_position = 0;
+        if (file_desc->block_position >= file_desc->block->occupied || 
+            file_desc->block_position >= BLOCK_SIZE) {
+            file_desc->block = file_desc->block->next;
+            if(file_desc->block != NULL){
+                //file_desc->block = file_desc->block;
+                file_desc->block_position = 0;
+            }
         }
-    }
 
-    // Update the file descriptor with the current block and position
-    file_desc->block = current_block;
-    file_desc->block_position = current_block_position;
+        /*struct block *next_block = file_desc->block->next;
+        if (next_block == NULL) {
+            printf("No next block");
+            break;
+        }
+        file_desc->block = next_block;*/
+    }
 
     ufs_error_code = UFS_ERR_NO_ERR;
 
@@ -345,8 +405,8 @@ void deleteFile(struct file *file) {
 
 int ufs_close(int fd) {
     // Проверка аргументов
-	printf("File Descriptor: %d \n", fd);
-	printf("File Descriptor Capacity: %d \n", file_descriptor_capacity);
+	///printf("File Descriptor: %d \n", fd);
+	//printf("File Descriptor Capacity: %d \n", file_descriptor_capacity);
 
     if (fd < 0 || fd >= file_descriptor_capacity || file_descriptors[fd] == NULL) {
         ufs_error_code = UFS_ERR_NO_FILE;
@@ -389,11 +449,11 @@ int ufs_delete(const char *filename) {
 			// Удаление файла из списка файлов
             if (file->next != NULL) {
     			file->next->prev = file->prev;
-			} else {
-    			file_list = file->prev;
 			}
 			if (file->prev != NULL) {
     			file->prev->next = file->next;
+			}else {
+    			file_list = file->prev;
 			}
 
             // Проверка наличия открытых дескрипторов
@@ -445,7 +505,3 @@ void ufs_destroy(void) {
 	free(file_descriptors);
     file_list = NULL;
 }
-//закрываем все открытые дескрипторы
-//удаляем все файлы
-//при удалении освобождаем все блоки
-//в destroy используем delete close

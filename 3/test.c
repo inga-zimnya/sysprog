@@ -61,6 +61,7 @@ test_stress_open(void)
 		int name_len = sprintf(name, "file%d", i) + 1;
 		int *in = &fd[i][0], *out = &fd[i][1];
 		ssize_t rc = ufs_read(*in, buf, sizeof(buf));
+		//printf("-%s-%ld\n", buf, rc);
 		unit_fail_if(rc != name_len);
 		unit_fail_if(memcmp(buf, name, rc) != 0);
 		unit_fail_if(ufs_close(*in) != 0);
@@ -106,7 +107,7 @@ test_io(void)
 
 	unit_check(rc == -1, "write into seemingly valid fd");
 	unit_fail_if(ufs_errno() != UFS_ERR_NO_FILE);
-
+	
 	rc = ufs_read(-1, NULL, 0);
 	unit_check(rc == -1, "read from invalid fd");
 	unit_check(ufs_errno() == UFS_ERR_NO_FILE, "errno is set");
@@ -114,17 +115,16 @@ test_io(void)
 
 	unit_check(rc == -1, "read from seemingly valid fd");
 	unit_fail_if(ufs_errno() != UFS_ERR_NO_FILE);
-
+	
 	int fd1 = ufs_open("file", UFS_CREATE);
 	int fd2 = ufs_open("file", 0);
 	unit_fail_if(fd1 == -1 || fd2 == -1);
 
 	char buffer[2048];
+	
 	unit_check(ufs_write(fd1, "123###", 3) == 3,
 		"data (only needed) is written");
-	int r = ufs_read(fd2, buffer, sizeof(buffer));
-	printf("%d\n", r);
-	//unit_check(ufs_read(fd2, buffer, sizeof(buffer)) == 3, "data is read");
+	unit_check(ufs_read(fd2, buffer, sizeof(buffer)) == 3, "data is read");
 	unit_check(memcmp(buffer, "123", 3) == 0, "the same data");
 
 	ufs_close(fd1);
@@ -143,7 +143,7 @@ test_io(void)
 	unit_fail_if(fd1 == -1);
 	unit_check(ufs_write(fd1, "abcd###", 4) == 4, "overwrite");
 	int result = ufs_read(fd1, buffer, sizeof(buffer));
-	printf("'%s'\n", buffer);
+	//printf("'%s'\n", buffer);
 	unit_check(result == 4, "read rest");
 	unit_check(memcmp(buffer, "5678", 4) == 0, "got the tail");
 	ufs_close(fd1);
@@ -195,6 +195,7 @@ test_io(void)
 	fd1 = ufs_open("file", 0);
 	unit_fail_if(fd1 == -1);
 	progress = 0;
+	int count = 0;
 	while (progress < some_size) {
 		size_t to_read = progress % 123 + 1;
 		/*
@@ -202,14 +203,21 @@ test_io(void)
 		 * be partial then.
 		 */
 		ssize_t rc = ufs_read(fd1, buffer + progress, to_read);
-		if (rc <= 0)
+		if (rc <= 0){
 			break;
+		}
 		progress += rc;
+	//	if(progress >= some_size){
+	//		printf("%s on count %d\n", "progress more than some_size", count);
+	//	}
+	//	printf("%ld\n", progress);
+		count++;
 	}
 	unit_check(progress == some_size, "read big data in parts");
 	ufs_close(fd1);
 	bool ok = true;
-	for (size_t i = 0; i < some_size && ok; ++i)
+	size_t i = 0;
+	for (i = 0; i < some_size && ok; ++i)
 		ok = ok && buffer[i] == (char)('a' + i % ('z' - 'a' + 1));
 	unit_check(ok, "data is correct");
 
