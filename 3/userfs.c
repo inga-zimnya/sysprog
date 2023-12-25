@@ -405,6 +405,7 @@ void deleteFile(struct file *file) {
     struct block *current_block = file->block_list;
     while (current_block != NULL) {
     	struct block *next_block = current_block->next;
+        if (current_block->memory != NULL) free(current_block->memory);
         free(current_block);
         current_block = next_block;
     }
@@ -506,17 +507,17 @@ void ufs_destroy(void) {
         deleteFile(current_file);
         current_file = next_file;
     }
-
-    file_descriptor_count = 0;
-    file_descriptor_capacity = 0;
-
-	// Освободить память, занимаемую массивом file_descriptors
+    
+    // Освободить память, занимаемую массивом file_descriptors
 	for(int i = 0; i < file_descriptor_capacity; i++) {
     	free(file_descriptors[i]);
 	}
+
+    file_descriptor_count = 0;
+    file_descriptor_capacity = 0;
 	
 	free(file_descriptors);
-    file_list = NULL;
+    if (file_list != NULL) free(file_list);
 }
 
 #ifdef NEED_RESIZE

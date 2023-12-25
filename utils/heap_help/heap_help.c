@@ -28,11 +28,20 @@ enum {
 
 enum report_mode {
 	// Report always. Even when have no leaks.
-	MODE_VERBOSE,
+	REPORT_MODE_VERBOSE,
 	// Report only if there are leaks.
-	MODE_LEAKS,
+	REPORT_MODE_LEAKS,
 	// Do not report anything.
-	MODE_QUIET,
+	REPORT_MODE_QUIET,
+};
+
+enum content_mode {
+	// Leave the resulting memory untouched like returned from the standard
+	// library.
+	CONTENT_MODE_ORIGINAL,
+	// Fill the new memory with trash bytes to easier catch bugs when people
+	// use not initialized memory.
+	CONTENT_MODE_TRASH,
 };
 
 // Single allocation done on the heap by a user.
@@ -61,7 +70,8 @@ static bool is_init_done = false;
 static bool is_exit_done = false;
 static __thread int init_lock_count = 0;
 static __thread int depth = 0;
-static enum report_mode report_mode = MODE_LEAKS;
+static enum report_mode report_mode = REPORT_MODE_LEAKS;
+static enum content_mode content_mode = CONTENT_MODE_ORIGINAL;
 
 // Before the original heap functions are retrieved, there is a dummy static
 // allocator working. It is needed because on some platforms the original
@@ -254,6 +264,8 @@ static_malloc(size_t size)
 	heaph_assert(static_size >= static_used);
 	heaph_assert(size < (size_t)(static_size - static_used));
 	void *res = static_buf + static_used;
+	if (content_mode == CONTENT_MODE_TRASH)
+		memset(res, '#', size);
 	static_used += size;
 	return res;
 }
@@ -339,20 +351,22 @@ trace_is_internal(const struct symbol *syms, int count)
 	return false;
 }
 
-static void
+static int
 trace_resolve(void *const *addrs, int count, struct symbol *syms)
 {
+	int failures = 0;
 	Dl_info info;
 	for (int i = 0; i < count; ++i) {
 		struct symbol *s = &syms[i];
 		if (dladdr(addrs[i], &info) == 0) {
-			heaph_printf("\nHH: dladdr() failure\n");
+			failures++;
 			memset(s, 0, sizeof(*s));
 			continue;
 		}
 		s->name = info.dli_sname;
 		s->file = info.dli_fname;
 	}
+	return failures;
 }
 
 static void
@@ -362,13 +376,13 @@ heaph_atexit(void)
 	// manually filter out all calls except for the first one.
 	if (__atomic_test_and_set(&is_exit_done, __ATOMIC_SEQ_CST))
 		return;
-	if (report_mode == MODE_QUIET)
+	if (report_mode == REPORT_MODE_QUIET)
 		return;
 	spinlock_acq(&allocs_lock);
 	int64_t count = alloc_count;
 	if (count == 0) {
 		spinlock_rel(&allocs_lock);
-		if (report_mode == MODE_VERBOSE) {
+		if (report_mode == REPORT_MODE_VERBOSE) {
 			heaph_printf("\n");
 			heaph_printf("HH: found no leaks\n");
 			heaph_printf("HH: total allocation count - %llu\n",
@@ -381,6 +395,7 @@ heaph_atexit(void)
 	int report_count = 0;
 	int64_t total_count = count;
 	uint64_t leak_size = 0;
+	int64_t total_fail_count = 0;
 	struct symbol syms[MAX_BACKTRACE_LEN];
 	// People often do not write '\n' in the end of their program. That
 	// makes it harder to read HH output unless the latter prepends itself
@@ -392,7 +407,7 @@ heaph_atexit(void)
 			--count;
 			continue;
 		}
-		trace_resolve(a->trace, a->trace_size, syms);
+		total_fail_count += trace_resolve(a->trace, a->trace_size, syms);
 		bool is_internal = trace_is_internal(syms, a->trace_size);
 		if (is_internal) {
 			--count;
@@ -408,7 +423,12 @@ heaph_atexit(void)
 	}
 	spinlock_rel(&allocs_lock);
 
-	if (count == 0 && report_mode != MODE_VERBOSE)
+	if (total_fail_count > 0) {
+		heaph_printf("\nHH: dladdr() failure %lld times\n",
+		             (long long)total_fail_count);
+	}
+
+	if (count == 0 && report_mode != REPORT_MODE_VERBOSE)
 		return;
 	int64_t suppressed_count = total_count - count;
 	heaph_printf("%s", prefix), prefix = "";
@@ -458,11 +478,19 @@ heaph_init(void)
 	const char *hh_report = getenv("HHREPORT");
 	if (hh_report != NULL) {
 		if (strcmp(hh_report, "v") == 0)
-			report_mode = MODE_VERBOSE;
+			report_mode = REPORT_MODE_VERBOSE;
 		else if (strcmp(hh_report, "l") == 0)
-			report_mode = MODE_LEAKS;
+			report_mode = REPORT_MODE_LEAKS;
 		else if (strcmp(hh_report, "q") == 0)
-			report_mode = MODE_QUIET;
+			report_mode = REPORT_MODE_QUIET;
+	}
+
+	const char *hh_content = getenv("HHCONTENT");
+	if (hh_content != NULL) {
+		if (strcmp(hh_content, "o") == 0)
+			content_mode = CONTENT_MODE_ORIGINAL;
+		else if (strcmp(hh_content, "t") == 0)
+			content_mode = CONTENT_MODE_TRASH;
 	}
 	atexit(heaph_atexit);
 }
@@ -524,8 +552,11 @@ malloc(size_t size)
 	heaph_touch();
 	++depth;
 	void *res = default_malloc(size);
-	if (res != NULL)
+	if (res != NULL) {
 		alloc_trace_new(res, size);
+		if (content_mode == CONTENT_MODE_TRASH)
+			memset(res, '#', size);
+	}
 	--depth;
 	return res;
 }
@@ -551,6 +582,8 @@ realloc(void *ptr, size_t size)
 		ptr = NULL;
 	void *res = default_realloc(ptr, size);
 	if (ptr == NULL && res != NULL) {
+		if (content_mode == CONTENT_MODE_TRASH)
+			memset(res, '#', size);
 		alloc_trace_new(res, size);
 	} else if (ptr != NULL && res == NULL) {
 		alloc_free(ptr);
