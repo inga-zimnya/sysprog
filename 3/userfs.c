@@ -262,7 +262,7 @@ ssize_t ufs_write(int fd, const char *buf, size_t size) {
             if (new_block == NULL) {
                 ufs_error_code = UFS_ERR_NO_MEM;
                 break;
-            } 
+            }
 
             new_block->memory = (char *) calloc(sizeof(char), BLOCK_SIZE);
             file_desc->block_position = 0;
@@ -397,18 +397,35 @@ ssize_t ufs_read(int fd, char *buf, size_t size) {
     return bytes_read;
 }
 
+void removeFromList(struct file* file) {
+    if (file->next != NULL) {
+        file->next->prev = file->prev;
+    }
+    if (file->prev != NULL) {
+        file->prev->next = file->next;
+    }
+    if(file_list == file) {
+        file_list = file->next;
+    }
+
+    file->next = NULL;
+    file->prev = NULL;
+}
+
 void deleteFile(struct file *file) {
     if (file == NULL) {
         return;
     }
 
-    struct block *current_block = file->block_list;
+    struct block *current_block = file->last_block;
     while (current_block != NULL) {
-    	struct block *next_block = current_block->next;
+    	struct block *next_block = current_block->prev;
         if (current_block->memory != NULL) free(current_block->memory);
         free(current_block);
         current_block = next_block;
     }
+
+    removeFromList(file);
 
     // Освобождение памяти, занятой файловой структурой
     free(file->name);
@@ -460,25 +477,17 @@ int ufs_delete(const char *filename) {
     while (file != NULL) {
         if (strcmp(file->name, filename) == 0) {
             // Файл найден
-			// Удаление файла из списка файлов
-            if (file->next != NULL) {
-    			file->next->prev = file->prev;
-			}
-			if (file->prev != NULL) {
-    			file->prev->next = file->next;
-			}else {
-    			file_list = file->prev;
-			}
 
             // Проверка наличия открытых дескрипторов
             if (file->refs > 0) {
                 // Есть открытые дескрипторы, помечаем файл для удаления
                 file->close_delete = true;
                 ufs_error_code = UFS_ERR_NO_FILE;
+                removeFromList(file);
                 return 0;
             } else {
                 deleteFile(file);
-                
+                return 0;
             }
         }
         file = file->next;
@@ -499,14 +508,6 @@ void ufs_destroy(void) {
             ufs_close(i);
         }
     }
-
-    // Удалить все файлы из списка файлов
-    struct file *current_file = file_list;
-    while (current_file != NULL) {
-        struct file *next_file = current_file->next;
-        deleteFile(current_file);
-        current_file = next_file;
-    }
     
     // Освободить память, занимаемую массивом file_descriptors
 	for(int i = 0; i < file_descriptor_capacity; i++) {
@@ -517,6 +518,15 @@ void ufs_destroy(void) {
     file_descriptor_capacity = 0;
 	
 	free(file_descriptors);
+
+    // Удалить все файлы из списка файлов
+    struct file *current_file = file_list;
+    while (current_file != NULL) {
+        struct file *next_file = current_file->next;
+        deleteFile(current_file);
+        current_file = next_file;
+    }
+
     if (file_list != NULL) free(file_list);
 }
 

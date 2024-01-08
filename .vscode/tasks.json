@@ -6,7 +6,7 @@
         {
           "label": "build 3",
           "type": "shell",
-          "command": "make",
+          "command": "make memleaks",
           "args": [],
           "showOutput":"always",
           "group": {

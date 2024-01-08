@@ -10,7 +10,7 @@
             "name": "Debug 3",
             "program": "${workspaceRoot}/3/a.out",
             "args": [],
-            "cwd": "${workspaceRoot}",
+            "cwd": "${workspaceRoot}/3/",
             "preLaunchTask": "build 3",
         },
         {
