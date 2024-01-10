@@ -12,6 +12,7 @@
             "args": [],
             "cwd": "${workspaceRoot}/3/",
             "preLaunchTask": "build 3",
+            "env": {"HHCONTENT": "t"}
         },
         {
             "type": "lldb",

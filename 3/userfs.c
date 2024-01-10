@@ -180,6 +180,7 @@ ufs_open(const char *filename, int flags)
 		new_file->refs = 1; // Устанавливаем счетчик открытых дескрипторов в 1
 		new_file->name = strdup(filename); // Копируем имя файла
         new_file->file_size = 0;
+        new_file->close_delete = false;
 
 		if (new_file->name == NULL) {
 			// Ошибка выделения памяти для имени файла
